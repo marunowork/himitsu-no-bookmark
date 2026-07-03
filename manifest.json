@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "ひみつのブックマーク",
+  "version": "2.1.0",
+  "description": "ブックマークを一覧表示し、パスフレーズで暗号化してダウンロード・インポートできる拡張機能。",
+  "permissions": [
+    "bookmarks",
+    "tabs"
+  ],
+  "action": {
+    "default_title": "ひみつのブックマークを開く",
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "marunowork@hotmail.com",
+      "strict_min_version": "109.0"
+    }
+  }
+}

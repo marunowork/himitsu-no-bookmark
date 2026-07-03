@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ひみつのブックマーク</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    font-size: 14px;
+    background: #f2f3f7;
+    color: #1a1a1a;
+  }
+  .app-shell {
+    max-width: 640px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: #fff;
+    box-shadow: 0 0 0 1px #e6e6ea;
+  }
+  header {
+    padding: 18px 24px 0;
+    border-bottom: 1px solid #e0e0e0;
+    background: #fff;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  header h1 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  nav.tabs {
+    display: flex;
+    gap: 2px;
+  }
+  nav.tabs button {
+    flex: 1;
+    padding: 10px 4px;
+    border: none;
+    background: transparent;
+    font-size: 13px;
+    font-weight: 600;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  nav.tabs button.active {
+    color: #3b5ab6;
+    border-bottom-color: #3b5ab6;
+  }
+  nav.tabs button:hover { background: #f5f6fa; }
+
+  .panel { display: none; padding: 16px 24px 28px; }
+  .panel.active { display: block; }
+
+  #search {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+  #tree, #import-tree {
+    overflow-y: auto;
+    max-height: 60vh;
+    padding: 2px;
+  }
+  ul { list-style: none; margin: 0; padding-left: 16px; }
+  ul.root { padding-left: 2px; }
+  li { margin: 1px 0; }
+  .folder {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 4px; border-radius: 4px; cursor: pointer;
+    user-select: none; font-weight: 600; color: #333;
+  }
+  .folder:hover { background: #f0f0f0; }
+  .folder .arrow { display: inline-block; width: 10px; transition: transform .1s; }
+  .folder.collapsed .arrow { transform: rotate(-90deg); }
+  .bookmark {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 4px 3px 18px; border-radius: 4px;
+    text-decoration: none; color: #1a1a1a;
+    white-space: nowrap; overflow: hidden;
+  }
+  .bookmark:hover { background: #eef4ff; }
+  .bookmark .favicon { width: 14px; height: 14px; flex: none; background-size: contain; background-repeat: no-repeat; }
+  .bookmark .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .children.hidden { display: none; }
+  #empty, #import-empty, .loading { padding: 16px 8px; text-align: center; color: #888; }
+
+  .field { margin-bottom: 8px; }
+  .field label { display: block; margin-bottom: 3px; font-weight: 600; font-size: 12px; }
+  .field input[type="password"], .field input[type="file"] {
+    width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+  }
+  .btn {
+    width: 100%; padding: 8px; border: none; border-radius: 5px;
+    background: #3b5ab6; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn:hover { background: #32499a; }
+  .btn:disabled { background: #aab3d6; cursor: default; }
+  .note { font-size: 11px; color: #888; line-height: 1.5; margin: 6px 0 10px; }
+  .status { font-size: 12px; margin-top: 8px; padding: 6px 8px; border-radius: 4px; display: none; }
+  .status.show { display: block; }
+  .status.ok { background: #e6f4ea; color: #1e7a34; }
+  .status.err { background: #fdecea; color: #b3261e; }
+  hr.sep { border: none; border-top: 1px solid #eee; margin: 12px 0; }
+
+  @media (prefers-color-scheme: dark) {
+    html, body { background: #141414; color: #e8e8e8; }
+    .app-shell { background: #1e1e1e; box-shadow: 0 0 0 1px #333; }
+    header { background: #1e1e1e; border-bottom-color: #3a3a3a; }
+    nav.tabs button { color: #aaa; }
+    nav.tabs button.active { color: #8ea6ff; border-bottom-color: #8ea6ff; }
+    nav.tabs button:hover { background: #2a2a2a; }
+    #search, .field input[type="password"], .field input[type="file"] { background: #2a2a2a; border-color: #444; color: #eee; }
+    .folder { color: #ddd; }
+    .folder:hover { background: #2d2d2d; }
+    .bookmark { color: #e8e8e8; }
+    .bookmark:hover { background: #26344d; }
+    .note { color: #999; }
+    hr.sep { border-top-color: #3a3a3a; }
+    .status.ok { background: #16311f; color: #7fd99a; }
+    .status.err { background: #3a1c1a; color: #f28b83; }
+  }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <header>
+    <h1>🔒 ひみつのブックマーク</h1>
+    <nav class="tabs">
+      <button id="tab-btn-list" class="active" data-target="panel-list">一覧</button>
+      <button id="tab-btn-encrypt" data-target="panel-encrypt">暗号化</button>
+      <button id="tab-btn-import" data-target="panel-import">インポート</button>
+    </nav>
+  </header>
+
+  <section id="panel-list" class="panel active">
+    <input type="text" id="search" placeholder="ブックマークを検索…" autocomplete="off">
+    <div id="tree"><div class="loading">読み込み中…</div></div>
+  </section>
+
+  <section id="panel-encrypt" class="panel">
+    <p class="note">現在のブックマークをパスフレーズで暗号化し、ファイルとしてダウンロードします。処理はすべてこのブラウザ内で行われ、外部には送信されません。パスフレーズは保存されないため、忘れると復号できなくなります。</p>
+    <div class="field">
+      <label for="enc-pass">パスフレーズ</label>
+      <input type="password" id="enc-pass" autocomplete="new-password" placeholder="パスフレーズを入力">
+    </div>
+    <div class="field">
+      <label for="enc-pass2">パスフレーズ(確認)</label>
+      <input type="password" id="enc-pass2" autocomplete="new-password" placeholder="もう一度入力">
+    </div>
+    <button class="btn" id="enc-btn">暗号化してダウンロード</button>
+    <div class="status" id="enc-status"></div>
+  </section>
+
+  <section id="panel-import" class="panel">
+    <p class="note">「暗号化」タブでダウンロードしたファイルを選択し、パスフレーズを入力して復号します。復号された内容はこの画面にのみ表示されます。</p>
+    <div class="field">
+      <label for="import-file">ファイルを選択</label>
+      <input type="file" id="import-file" accept="application/json,.json">
+    </div>
+    <div class="field">
+      <label for="import-pass">パスフレーズ</label>
+      <input type="password" id="import-pass" autocomplete="off" placeholder="パスフレーズを入力">
+    </div>
+    <button class="btn" id="import-btn">復号して表示</button>
+    <div class="status" id="import-status"></div>
+    <hr class="sep">
+    <div id="import-tree"></div>
+  </section>
+
+  <script src="page.js"></script>
+</div>
+</body>
+</html>
