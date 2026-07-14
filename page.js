@@ -23,15 +23,18 @@ tabButtons.forEach((btn) => {
  * 共通: ブックマークツリーの描画
  * (browser.bookmarks の生ノードと、復号後のプレーンオブジェクトの
  *  どちらも {title, url?, children?} の形なので同じ関数で描画できる)
+ *
+ * options.dnd が true の場合、フォルダ間のドラッグ&ドロップ移動を
+ * 有効にする(現状は「インポート」タブの復元済みリストのみで使用)。
  * ========================================================== */
-function renderTree(container, nodesArray, keyword, emptyMessage) {
+function renderTree(container, nodesArray, keyword, emptyMessage, options = {}) {
   container.innerHTML = "";
   const ul = document.createElement("ul");
   ul.className = "root";
 
   let hasAny = false;
   for (const node of nodesArray) {
-    const el = buildNode(node, keyword);
+    const el = buildNode(node, keyword, options);
     if (el) {
       ul.appendChild(el);
       hasAny = true;
@@ -46,15 +49,21 @@ function renderTree(container, nodesArray, keyword, emptyMessage) {
     div.textContent = emptyMessage;
     container.appendChild(div);
   }
+
+  if (options.dnd) {
+    setupRootDropZone(container);
+  }
 }
 
-function buildNode(node, keyword) {
+function buildNode(node, keyword, options = {}) {
+  const dnd = !!options.dnd;
+  const deletable = !!options.deletable;
   const isFolder = Array.isArray(node.children);
 
   if (isFolder) {
     const childEls = [];
     for (const child of node.children) {
-      const el = buildNode(child, keyword);
+      const el = buildNode(child, keyword, options);
       if (el) childEls.push(el);
     }
 
@@ -75,6 +84,16 @@ function buildNode(node, keyword) {
       folderRow.classList.toggle("collapsed");
       childrenUl.classList.toggle("hidden");
     });
+
+    if (dnd && node._id) {
+      folderRow.draggable = true;
+      folderRow.dataset.nodeId = node._id;
+      attachDragHandlers(folderRow, node._id, { isFolderDropTarget: true });
+    }
+
+    if (deletable && node._id) {
+      folderRow.appendChild(createDeleteButton(node));
+    }
 
     li.appendChild(folderRow);
     li.appendChild(childrenUl);
@@ -109,6 +128,21 @@ function buildNode(node, keyword) {
     browser.tabs.create({ url: node.url });
   });
 
+  if (dnd && node._id) {
+    a.draggable = true;
+    a.dataset.nodeId = node._id;
+    attachDragHandlers(a, node._id, { isFolderDropTarget: false });
+  }
+
+  if (deletable && node._id) {
+    const row = document.createElement("div");
+    row.className = "bookmark-row";
+    row.appendChild(a);
+    row.appendChild(createDeleteButton(node));
+    li.appendChild(row);
+    return li;
+  }
+
   li.appendChild(a);
   return li;
 }
@@ -120,6 +154,253 @@ function matchesKeyword(text, keyword) {
 
 function safeHostname(url) {
   try { return new URL(url).hostname; } catch { return ""; }
+}
+
+/* ============================================================
+ * ドラッグ&ドロップによるフォルダ間移動(インポートタブ専用)
+ *
+ * importedTopNodes(トップレベル配列)を「唯一の真実」として保持し、
+ * 各ノードに一意な _id を割り当てて識別する。
+ * ドロップ操作のたびにこの配列を書き換えてから再描画する。
+ * ========================================================== */
+let dndIdCounter = 0;
+let draggedNodeId = null;
+
+function generateNodeId() {
+  dndIdCounter += 1;
+  return `n${Date.now()}_${dndIdCounter}`;
+}
+
+/**
+ * ノード配列を再帰的に走査し、_id が未設定のノードにIDを付与する。
+ * 既にIDを持つノードはそのまま(移動時に再割り当てされないようにするため)。
+ */
+function assignNodeIds(nodesArray) {
+  for (const node of nodesArray) {
+    if (!node._id) node._id = generateNodeId();
+    if (Array.isArray(node.children)) assignNodeIds(node.children);
+  }
+}
+
+/** 指定IDのノードを探して返す(見つからなければ null)。*/
+function findNodeById(id, nodesArray) {
+  for (const node of nodesArray) {
+    if (node._id === id) return node;
+    if (Array.isArray(node.children)) {
+      const found = findNodeById(id, node.children);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** 指定IDのノードが格納されている配列と、その中でのインデックスを返す。*/
+function findParentArrayAndIndex(id, nodesArray) {
+  for (let i = 0; i < nodesArray.length; i++) {
+    const node = nodesArray[i];
+    if (node._id === id) return { parentArray: nodesArray, index: i };
+    if (Array.isArray(node.children)) {
+      const result = findParentArrayAndIndex(id, node.children);
+      if (result) return result;
+    }
+  }
+  return null;
+}
+
+/** ancestorNode の子孫に targetId のノードが含まれるか判定する。*/
+function isDescendantOf(ancestorNode, targetId) {
+  if (!Array.isArray(ancestorNode.children)) return false;
+  for (const child of ancestorNode.children) {
+    if (child._id === targetId) return true;
+    if (isDescendantOf(child, targetId)) return true;
+  }
+  return false;
+}
+
+/**
+ * draggedId のノードを一旦取り除いたうえで、computeDestination が返す
+ * 場所(配列と挿入位置)に挿入する。無効な移動(自分自身やその子孫への
+ * 移動など)の場合は computeDestination が null を返し、元の位置に戻す。
+ * @returns {boolean} 移動が行われたかどうか
+ */
+function moveNode(draggedId, computeDestination) {
+  const draggedLoc = findParentArrayAndIndex(draggedId, importedTopNodes);
+  if (!draggedLoc) return false;
+
+  const [draggedNode] = draggedLoc.parentArray.splice(draggedLoc.index, 1);
+
+  const dest = computeDestination(draggedNode);
+  if (!dest) {
+    // 無効な移動は元に戻す
+    draggedLoc.parentArray.splice(draggedLoc.index, 0, draggedNode);
+    return false;
+  }
+
+  dest.array.splice(dest.index, 0, draggedNode);
+  return true;
+}
+
+/** フォルダの上にドロップ:そのフォルダの末尾に子として移動する。*/
+function moveNodeIntoFolder(draggedId, targetFolderId) {
+  return moveNode(draggedId, (draggedNode) => {
+    if (targetFolderId === draggedNode._id) return null;
+
+    if (targetFolderId === "ROOT") {
+      return { array: importedTopNodes, index: importedTopNodes.length };
+    }
+
+    const targetFolder = findNodeById(targetFolderId, importedTopNodes);
+    if (!targetFolder || !Array.isArray(targetFolder.children)) return null;
+    if (isDescendantOf(draggedNode, targetFolderId)) return null; // 自分の子孫には移動不可
+
+    return { array: targetFolder.children, index: targetFolder.children.length };
+  });
+}
+
+/** 項目の上にドロップ:その項目の直前(同じ階層)に移動する。*/
+function moveNodeBeforeSibling(draggedId, targetId) {
+  return moveNode(draggedId, (draggedNode) => {
+    if (targetId === draggedNode._id) return null;
+    if (isDescendantOf(draggedNode, targetId)) return null; // 自分の子孫の前には移動不可
+
+    const loc = findParentArrayAndIndex(targetId, importedTopNodes);
+    if (!loc) return null;
+
+    return { array: loc.parentArray, index: loc.index };
+  });
+}
+
+/** ルート直下(最上位)の末尾に移動する。*/
+function moveNodeToRootEnd(draggedId) {
+  return moveNode(draggedId, (draggedNode) => {
+    return { array: importedTopNodes, index: importedTopNodes.length };
+  });
+}
+
+/**
+ * 1つの要素(フォルダ行 or ブックマークリンク)にドラッグ&ドロップ用の
+ * イベントハンドラを付与する。
+ * @param {HTMLElement} el 対象要素
+ * @param {string} nodeId この要素が表すノードのID
+ * @param {object} opts { isFolderDropTarget: フォルダとして子要素を受け入れるか }
+ */
+function attachDragHandlers(el, nodeId, opts) {
+  el.addEventListener("dragstart", (ev) => {
+    draggedNodeId = nodeId;
+    ev.dataTransfer.effectAllowed = "move";
+    try { ev.dataTransfer.setData("text/plain", nodeId); } catch { /* noop */ }
+    // 描画のずれを避けるため、クラス付与は少し遅延させる
+    setTimeout(() => el.classList.add("dragging"), 0);
+  });
+
+  el.addEventListener("dragend", () => {
+    draggedNodeId = null;
+    document.querySelectorAll(".dragging").forEach((n) => n.classList.remove("dragging"));
+    document.querySelectorAll(".drag-over, .drag-over-item").forEach((n) => {
+      n.classList.remove("drag-over", "drag-over-item");
+    });
+  });
+
+  el.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.dataTransfer.dropEffect = "move";
+    el.classList.add(opts.isFolderDropTarget ? "drag-over" : "drag-over-item");
+  });
+
+  el.addEventListener("dragleave", () => {
+    el.classList.remove("drag-over", "drag-over-item");
+  });
+
+  el.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    el.classList.remove("drag-over", "drag-over-item");
+
+    const draggedId = draggedNodeId || ev.dataTransfer.getData("text/plain");
+    if (!draggedId || draggedId === nodeId) return;
+
+    const moved = opts.isFolderDropTarget
+      ? moveNodeIntoFolder(draggedId, nodeId)
+      : moveNodeBeforeSibling(draggedId, nodeId);
+
+    if (moved) {
+      renderImportTree();
+    } else {
+      showStatus(addBookmarkStatusEl, "そこには移動できません(フォルダを自分自身や、その中には移動できません)。", false);
+    }
+  });
+}
+
+/**
+ * ツリーコンテナ自体(空白部分)へのドロップを、ルート直下への移動として
+ * 扱えるようにする。項目上でのドロップは stopPropagation されるため、
+ * ここには「何もない場所」にドロップした時だけイベントが届く。
+ */
+function setupRootDropZone(container) {
+  container.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "move";
+  });
+
+  container.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    const draggedId = draggedNodeId || ev.dataTransfer.getData("text/plain");
+    if (!draggedId) return;
+
+    const moved = moveNodeToRootEnd(draggedId);
+    if (moved) renderImportTree();
+  });
+}
+
+/* ============================================================
+ * 削除機能(インポートタブ専用)
+ * ========================================================== */
+
+/**
+ * ノード用の削除ボタン要素を作成する。
+ * クリックすると確認ダイアログを表示し、承認されればノードを
+ * importedTopNodes から取り除いて再描画する。
+ */
+function createDeleteButton(node) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "delete-btn";
+  btn.title = "削除";
+  btn.setAttribute("aria-label", "削除");
+  btn.textContent = "🗑";
+
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    handleDeleteNode(node._id, node);
+  });
+
+  // 削除ボタン自体がドラッグ操作の起点にならないようにする
+  btn.addEventListener("dragstart", (ev) => ev.stopPropagation());
+
+  return btn;
+}
+
+/**
+ * 指定ノードを確認のうえ削除する。
+ */
+function handleDeleteNode(id, node) {
+  const isFolder = Array.isArray(node.children);
+  const label = node.title || (isFolder ? "(無題のフォルダ)" : node.url);
+
+  const message = isFolder && node.children.length > 0
+    ? `フォルダ「${label}」を削除しますか?\n中の${node.children.length}件の項目もすべて削除されます。`
+    : `「${label}」を削除しますか?`;
+
+  if (!window.confirm(message)) return;
+
+  const loc = findParentArrayAndIndex(id, importedTopNodes);
+  if (!loc) return;
+
+  loc.parentArray.splice(loc.index, 1);
+  renderImportTree();
+  showStatus(addBookmarkStatusEl, `「${label}」を削除しました。`, true);
 }
 
 /* ============================================================
@@ -197,6 +478,17 @@ function nodeToPlain(node) {
     return { title: node.title || node.url, url: node.url };
   }
   return null;
+}
+
+// ドラッグ&ドロップ管理用に付与した _id を取り除き、
+// 暗号化・保存対象を最小限のデータだけにする。
+function stripInternalIds(nodesArray) {
+  return nodesArray.map((node) => {
+    if (Array.isArray(node.children)) {
+      return { title: node.title || "", children: stripInternalIds(node.children) };
+    }
+    return { title: node.title || node.url, url: node.url };
+  });
 }
 
 async function encryptBookmarks(passphrase, plainArray) {
@@ -314,6 +606,28 @@ const importBtn = document.getElementById("import-btn");
 const importStatusEl = document.getElementById("import-status");
 const importTreeEl = document.getElementById("import-tree");
 
+const addBookmarkTextareaEl = document.getElementById("add-bookmark-textarea");
+const addBookmarkBtn = document.getElementById("add-bookmark-btn");
+const addBookmarkStatusEl = document.getElementById("add-bookmark-status");
+
+const redownloadBtn = document.getElementById("redownload-btn");
+const redownloadStatusEl = document.getElementById("redownload-status");
+
+// 復元(復号)したブックマークの状態。トップレベルの配列を保持し、
+// 追加操作や再描画のたびにこの配列を更新する。
+let importedTopNodes = [];
+
+function renderImportTree() {
+  assignNodeIds(importedTopNodes);
+  renderTree(
+    importTreeEl,
+    importedTopNodes,
+    "",
+    "ブックマークがありません。ファイルをインポートするか、下のフォームから追加してください。",
+    { dnd: true, deletable: true }
+  );
+}
+
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -338,7 +652,6 @@ importBtn.addEventListener("click", async () => {
 
   importBtn.disabled = true;
   showStatus(importStatusEl, "復号しています…", true);
-  importTreeEl.innerHTML = "";
 
   try {
     const text = await readFileAsText(file);
@@ -350,7 +663,8 @@ importBtn.addEventListener("click", async () => {
     }
 
     const plainArray = await decryptBookmarks(pass, fileObj);
-    renderTree(importTreeEl, plainArray, "", "ブックマークが見つかりません。");
+    importedTopNodes = plainArray;
+    renderImportTree();
     showStatus(importStatusEl, "復号に成功しました。", true);
   } catch (err) {
     console.error(err);
@@ -359,6 +673,113 @@ importBtn.addEventListener("click", async () => {
     importBtn.disabled = false;
   }
 });
+
+/**
+ * テキストエリアの入力を解析し、{title, url} の配列を返す。
+ * 1行1件。「タイトル, URL」または「タイトル | URL」形式、
+ * もしくはURLのみの行にも対応する。
+ */
+function parseBookmarkLines(text) {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const results = [];
+  const errors = [];
+
+  for (const line of lines) {
+    let title = "";
+    let url = "";
+
+    const sepMatch = line.includes("|") ? "|" : (line.includes(",") ? "," : null);
+
+    if (sepMatch) {
+      const idx = line.indexOf(sepMatch);
+      title = line.slice(0, idx).trim();
+      url = line.slice(idx + 1).trim();
+    } else {
+      url = line;
+    }
+
+    if (!url) {
+      errors.push(line);
+      continue;
+    }
+
+    // http(s):// が無い場合は補完を試みる
+    if (!/^https?:\/\//i.test(url)) {
+      url = "https://" + url;
+    }
+
+    try {
+      const parsed = new URL(url);
+      if (!title) title = parsed.hostname;
+      results.push({ title, url: parsed.href });
+    } catch {
+      errors.push(line);
+    }
+  }
+
+  return { results, errors };
+}
+
+addBookmarkBtn.addEventListener("click", () => {
+  const text = addBookmarkTextareaEl.value;
+
+  if (!text.trim()) {
+    showStatus(addBookmarkStatusEl, "追加するブックマークを入力してください。", false);
+    return;
+  }
+
+  const { results, errors } = parseBookmarkLines(text);
+
+  if (results.length === 0) {
+    showStatus(addBookmarkStatusEl, "有効なURLが見つかりませんでした。入力内容を確認してください。", false);
+    return;
+  }
+
+  importedTopNodes = importedTopNodes.concat(results);
+  renderImportTree();
+  addBookmarkTextareaEl.value = "";
+
+  if (errors.length > 0) {
+    showStatus(
+      addBookmarkStatusEl,
+      `${results.length}件を追加しました(${errors.length}件は形式が不正のためスキップしました)。`,
+      true
+    );
+  } else {
+    showStatus(addBookmarkStatusEl, `${results.length}件を追加しました。`, true);
+  }
+});
+
+redownloadBtn.addEventListener("click", async () => {
+  const pass = importPassEl.value;
+
+  if (importedTopNodes.length === 0) {
+    showStatus(redownloadStatusEl, "保存するブックマークがありません。", false);
+    return;
+  }
+  if (!pass) {
+    showStatus(redownloadStatusEl, "上の「パスフレーズ」欄に、暗号化に使うパスフレーズを入力してください。", false);
+    return;
+  }
+
+  redownloadBtn.disabled = true;
+  showStatus(redownloadStatusEl, "暗号化しています…", true);
+
+  try {
+    const cleanArray = stripInternalIds(importedTopNodes);
+    const encrypted = await encryptBookmarks(pass, cleanArray);
+    downloadJson(encrypted, `himitsu-bookmark_${timestampForFilename()}.json`);
+    showStatus(redownloadStatusEl, "更新版を暗号化してダウンロードしました。", true);
+  } catch (err) {
+    console.error(err);
+    showStatus(redownloadStatusEl, "ダウンロードに失敗しました。もう一度お試しください。", false);
+  } finally {
+    redownloadBtn.disabled = false;
+  }
+});
+
+// 初期表示(未インポート状態でも「追加」フォームを使えるようにする)
+renderImportTree();
 
 /* ============================================================
  * 初期化

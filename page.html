@@ -85,6 +85,24 @@
   }
   .folder:hover { background: #f0f0f0; }
   .folder .arrow { display: inline-block; width: 10px; transition: transform .1s; }
+  .folder .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bookmark-row { display: flex; align-items: center; gap: 2px; }
+  .bookmark-row .bookmark { flex: 1; min-width: 0; }
+  .delete-btn {
+    flex: none;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 4px;
+    color: #999;
+  }
+  .delete-btn:hover {
+    background: #fdecea;
+    color: #b3261e;
+  }
   .folder.collapsed .arrow { transform: rotate(-90deg); }
   .bookmark {
     display: flex; align-items: center; gap: 6px;
@@ -98,10 +116,36 @@
   .children.hidden { display: none; }
   #empty, #import-empty, .loading { padding: 16px 8px; text-align: center; color: #888; }
 
+  /* ドラッグ&ドロップ(インポートタブの復元済みリスト専用) */
+  .folder[draggable="true"], .bookmark[draggable="true"] {
+    cursor: grab;
+  }
+  .dragging {
+    opacity: 0.4;
+  }
+  .folder.drag-over {
+    outline: 2px dashed #3b5ab6;
+    outline-offset: -2px;
+    background: #eef4ff;
+  }
+  .drag-over-item {
+    box-shadow: inset 0 2px 0 0 #3b5ab6;
+  }
+
   .field { margin-bottom: 8px; }
   .field label { display: block; margin-bottom: 3px; font-weight: 600; font-size: 12px; }
-  .field input[type="password"], .field input[type="file"] {
+  .field input[type="password"], .field input[type="file"], .field textarea {
     width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+    font-family: inherit;
+  }
+  .field textarea {
+    resize: vertical;
+    min-height: 60px;
+  }
+  .sub-heading {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 4px 0 4px;
   }
   .btn {
     width: 100%; padding: 8px; border: none; border-radius: 5px;
@@ -123,11 +167,15 @@
     nav.tabs button { color: #aaa; }
     nav.tabs button.active { color: #8ea6ff; border-bottom-color: #8ea6ff; }
     nav.tabs button:hover { background: #2a2a2a; }
-    #search, .field input[type="password"], .field input[type="file"] { background: #2a2a2a; border-color: #444; color: #eee; }
+    #search, .field input[type="password"], .field input[type="file"], .field textarea { background: #2a2a2a; border-color: #444; color: #eee; }
     .folder { color: #ddd; }
     .folder:hover { background: #2d2d2d; }
     .bookmark { color: #e8e8e8; }
     .bookmark:hover { background: #26344d; }
+    .folder.drag-over { background: #26344d; outline-color: #8ea6ff; }
+    .drag-over-item { box-shadow: inset 0 2px 0 0 #8ea6ff; }
+    .delete-btn { color: #888; }
+    .delete-btn:hover { background: #3a1c1a; color: #f28b83; }
     .note { color: #999; }
     hr.sep { border-top-color: #3a3a3a; }
     .status.ok { background: #16311f; color: #7fd99a; }
@@ -166,7 +214,7 @@
   </section>
 
   <section id="panel-import" class="panel">
-    <p class="note">「暗号化」タブでダウンロードしたファイルを選択し、パスフレーズを入力して復号します。復号された内容はこの画面にのみ表示されます。</p>
+    <p class="note">「暗号化」タブでダウンロードしたファイルを選択し、パスフレーズを入力して復号します。復号された内容はこの画面にのみ表示されます。表示された項目はドラッグしてフォルダの上にドロップすると、そのフォルダの中に移動できます(項目の上にドロップすると、その項目の直前に並べ替わります)。</p>
     <div class="field">
       <label for="import-file">ファイルを選択</label>
       <input type="file" id="import-file" accept="application/json,.json">
@@ -179,6 +227,24 @@
     <div class="status" id="import-status"></div>
     <hr class="sep">
     <div id="import-tree"></div>
+
+    <hr class="sep">
+    <h2 class="sub-heading">ブックマークを追加</h2>
+    <p class="note">復元したブックマークに、新しいブックマークを手動で追加できます。1行につき1件、「タイトル, URL」の形式で入力してください(タイトルを省略してURLのみでも構いません)。複数行入力すると、まとめて追加できます。</p>
+    <div class="field">
+      <label for="add-bookmark-textarea">追加するブックマーク</label>
+      <textarea id="add-bookmark-textarea" rows="4" placeholder="例:
+Anthropic, https://www.anthropic.com
+https://example.com"></textarea>
+    </div>
+    <button class="btn" id="add-bookmark-btn">リストに追加</button>
+    <div class="status" id="add-bookmark-status"></div>
+
+    <hr class="sep">
+    <h2 class="sub-heading">更新した内容を保存</h2>
+    <p class="note">追加したブックマークを含めて、インポート時に入力したパスフレーズで再度暗号化し、ファイルとしてダウンロードします。</p>
+    <button class="btn" id="redownload-btn">更新版を暗号化してダウンロード</button>
+    <div class="status" id="redownload-status"></div>
   </section>
 
   <script src="page.js"></script>
